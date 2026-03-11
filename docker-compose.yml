@@ -1,0 +1,83 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Geo Embedder — Docker Compose
+#
+# Сервисы:
+#   pipeline  — запуск скриптов 01–05 (подготовка данных + обучение)
+#   serve     — FastAPI сервер эмбеддера для Open WebUI
+#   jupyter   — опциональный Jupyter для экспериментов
+#
+# Тома:
+#   ./raw_docs     → /data/raw_docs    (входные документы, read-only)
+#   ./data         → /data/processed   (чанки, пары, триплеты)
+#   ./models       → /models           (HF-кэш + дообученные модели)
+#   ./output       → /output           (результаты оценки)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Пайплайн: подготовка данных + обучение ──────────────────────────────────
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: geo-embedder:latest
+    container_name: geo_pipeline
+    runtime: nvidia                      # убрать если нет GPU
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0           # выбрать нужную карту
+      - OPENAI_API_KEY=${OPENAI_API_KEY} # из .env файла
+      - HF_HOME=/models/huggingface
+      - TRANSFORMERS_CACHE=/models/huggingface
+      - PYTHONPATH=/app
+    volumes:
+      - ./raw_docs:/data/raw_docs:ro     # исходные PDF/DOCX (только чтение)
+      - ./data:/data/processed           # обработанные данные
+      - ./models:/models                 # кэш моделей + сохранённые веса
+      - ./output:/output                 # результаты экспериментов
+      - ./scripts:/app/scripts           # код (монтируем для hot-reload при разработке)
+      - ./training:/app/training
+    working_dir: /app
+    command: tail -f /dev/null
+    shm_size: "16gb"                     # нужен для DataLoader с num_workers>0
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    restart: unless-stopped
+
+  # ── Сервер эмбеддера для Open WebUI ─────────────────────────────────────────
+  # serve:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   image: geo-embedder:latest
+  #   container_name: geo_serve
+  #   runtime: nvidia
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  #     - CUDA_VISIBLE_DEVICES=0
+  #     - HF_HOME=/models/huggingface
+  #     - MODEL_PATH=${MODEL_PATH:-/models/finetuned-bge-m3-geo}
+  #     - PYTHONPATH=/app
+  #   volumes:
+  #     - ./models:/models                 # модель должна быть здесь
+  #     - ./serving:/app/serving
+  #   working_dir: /app
+  #   command: >
+  #     python serving/06_serve.py
+  #       --model ${MODEL_PATH:-/models/finetuned-bge-m3-geo}
+  #       --host 0.0.0.0
+  #       --port 8080
+  #   ports:
+  #     - "8080:8080"                      # этот порт указываем в Open WebUI
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 90s                  # время на загрузку модели
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - pipeline                         # убедиться что образ собран

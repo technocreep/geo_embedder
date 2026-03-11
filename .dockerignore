@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+
+# Python кэш
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+.eggs
+
+# Данные и модели (монтируются как тома, не копируются в образ)
+raw_docs/
+data/
+models/
+output/
+notebooks/
+
+# Секреты
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Временные файлы
+*.tmp
+*.log
