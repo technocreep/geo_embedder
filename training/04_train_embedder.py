@@ -37,6 +37,7 @@ from sentence_transformers import (
     InputExample,
     losses,
     evaluation,
+    util as st_util,
 )
 from sentence_transformers.training_args import SentenceTransformerTrainingArguments
 from sentence_transformers.trainer import SentenceTransformerTrainer
@@ -268,7 +269,7 @@ def train(args):
                 corpus=corpus,
                 relevant_docs=relevant,
                 name="geo-dev",
-                score_functions={"cos_sim": evaluation.InformationRetrievalEvaluator.cos_sim},
+                score_functions={"cos_sim": st_util.cos_sim},
                 batch_size=64,
             )
             logger.info(f"Dev evaluator: {len(queries)} вопросов, {len(corpus)} чанков")
