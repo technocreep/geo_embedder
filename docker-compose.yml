@@ -23,11 +23,12 @@ services:
     image: geo-embedder:latest
     container_name: geo_pipeline
     runtime: nvidia                      # убрать если нет GPU
+    env_file:
+      - .env                             # все переменные из .env → shell env контейнера
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - CUDA_VISIBLE_DEVICES=0           # выбрать нужную карту
-      - OPENAI_API_KEY=${OPENAI_API_KEY} # из .env файла
       - HF_HOME=/models/huggingface
       - TRANSFORMERS_CACHE=/models/huggingface
       - PYTHONPATH=/app
