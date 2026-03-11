@@ -20,14 +20,19 @@
 """
 
 import argparse
+import asyncio
 import json
+import os
 import random
 from pathlib import Path
 from typing import Optional
 from collections import defaultdict
 
+import httpx
+from openai import AsyncOpenAI
 from tqdm import tqdm
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
@@ -48,30 +53,24 @@ def build_bm25_negatives(
     queries: list[dict],
     all_chunks: list[dict],
     top_k: int = 20,
-    min_overlap: float = 0.3,
 ) -> list[Optional[str]]:
     """
     Для каждого запроса: найти чанки с высоким BM25-score (лексически похожие),
     но из другого документа (не true positive). Это hard negatives: модель может
     их «перепутать» с правильным ответом по ключевым словам.
     """
-    # pip install rank-bm25
     from rank_bm25 import BM25Okapi
 
-    # Токенизация корпуса
     corpus_ids = [c["id"] for c in all_chunks]
     corpus_texts = [c["text"] for c in all_chunks]
     tokenized = [t.lower().split() for t in corpus_texts]
     bm25 = BM25Okapi(tokenized)
 
     negatives = []
-    positive_ids = {q["positive_chunk_id"] for q in queries}
-
     for query_rec in tqdm(queries, desc="BM25 hard negatives"):
         query_tokens = query_rec["query"].lower().split()
         scores = bm25.get_scores(query_tokens)
 
-        # Берём top-k, исключая true positive
         ranked = sorted(enumerate(scores), key=lambda x: -x[1])
         neg = None
         for idx, score in ranked[:top_k]:
@@ -105,13 +104,11 @@ def build_crossdomain_negatives(
     print(f"Загружаем модель {model_name} для cross-domain negatives...")
     model = SentenceTransformer(model_name, device=selected_device)
 
-    # Группируем чанки по подобластям
     by_subdomain: dict[str, list[dict]] = defaultdict(list)
     for c in all_chunks:
         sd = c["metadata"].get("subdomain", "общая_геология")
         by_subdomain[sd].append(c)
 
-    # Кодируем все чанки батчами
     print("Кодируем корпус...")
     all_texts = [c["text"] for c in all_chunks]
     all_ids = [c["id"] for c in all_chunks]
@@ -122,7 +119,6 @@ def build_crossdomain_negatives(
         normalize_embeddings=True, show_progress_bar=True
     )
 
-    # Кодируем запросы
     query_texts = [q["query"] for q in queries]
     query_embs = model.encode(
         query_texts, batch_size=batch_size,
@@ -137,7 +133,6 @@ def build_crossdomain_negatives(
         query_subdomain = query_rec.get("subdomain", "")
         pos_id = query_rec["positive_chunk_id"]
 
-        # Ранжируем, фильтруем по другой подобласти и не-positive
         ranked = np.argsort(-scores_matrix[i])
         neg = None
         for idx in ranked[:50]:
@@ -164,60 +159,53 @@ ADVERSARIAL_PROMPT = """Ты эксперт-геолог. Перефразиру
 {text}"""
 
 
-def build_adversarial_negatives(
+async def build_adversarial_negatives(
     chunks: list[dict],
-    backend: str = "openai",
     model: str = "gpt-4o-mini",
     sample_ratio: float = 0.3,
+    concurrency: int = 10,
 ) -> dict[str, str]:
     """
     Генерирует adversarial negative для случайной выборки чанков.
     Возвращает dict: chunk_id -> adversarial_text
     """
-    import os, time
-
     sample = random.sample(chunks, int(len(chunks) * sample_ratio))
-    result = {}
 
-    for chunk in tqdm(sample, desc="Adversarial negatives"):
-        try:
-            if backend == "openai":
-                import httpx
-                from openai import OpenAI
-                proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-                http_client = httpx.Client(proxy=proxy) if proxy else None
-                client = OpenAI(
-                    api_key=os.environ["OPENAI_API_KEY"],
-                    base_url=os.environ.get("OPENAI_API_BASE", None),
-                    http_client=http_client,
-                )
-                resp = client.chat.completions.create(
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    http_client = httpx.AsyncClient(proxy=proxy) if proxy else None
+    client = AsyncOpenAI(
+        api_key=os.environ["OPENAI_API_KEY"],
+        base_url=os.environ.get("OPENAI_API_BASE", None),
+        http_client=http_client,
+    )
+
+    sem = asyncio.Semaphore(concurrency)
+    result: dict[str, str] = {}
+    pbar = tqdm(total=len(sample), desc="Adversarial negatives")
+
+    async def process_one(chunk):
+        async with sem:
+            try:
+                resp = await client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user",
-                                "content": ADVERSARIAL_PROMPT.format(text=chunk["text"][:1500])}],
-                    temperature=0.8, max_tokens=600,
+                               "content": ADVERSARIAL_PROMPT.format(text=chunk["text"][:1500])}],
+                    temperature=0.8,
+                    max_tokens=600,
                 )
                 adv_text = resp.choices[0].message.content.strip()
-            else:
-                import urllib.request
-                payload = json.dumps({
-                    "model": model,
-                    "messages": [{"role": "user",
-                                  "content": ADVERSARIAL_PROMPT.format(text=chunk["text"][:1500])}],
-                    "stream": False,
-                    "options": {"temperature": 0.8},
-                }).encode()
-                req = urllib.request.Request(
-                    "http://localhost:11434/api/chat", data=payload,
-                    headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    adv_text = json.loads(r.read())["message"]["content"].strip()
+                if len(adv_text) > 50:
+                    result[chunk["id"]] = adv_text
+            except Exception as e:
+                print(f"\n[error] {chunk['id']}: {e}")
+            finally:
+                pbar.update(1)
 
-            if len(adv_text) > 50:
-                result[chunk["id"]] = adv_text
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"\n[error] {chunk['id']}: {e}")
+    await asyncio.gather(*[process_one(c) for c in sample])
+    pbar.close()
+    await client.close()
+    if http_client:
+        await http_client.aclose()
 
     return result
 
@@ -241,19 +229,16 @@ def build_triplets(
         pos_id = query_rec["positive_chunk_id"]
         subdomain = query_rec.get("subdomain", "")
 
-        # BM25
         if bm25_negs[i]:
             triplets.append({
                 "query": q, "positive": pos, "negative": bm25_negs[i],
                 "neg_type": "bm25", "subdomain": subdomain
             })
-        # Cross-domain
         if crossdomain_negs[i]:
             triplets.append({
                 "query": q, "positive": pos, "negative": crossdomain_negs[i],
                 "neg_type": "crossdomain", "subdomain": subdomain
             })
-        # Adversarial
         if pos_id in adversarial_negs:
             triplets.append({
                 "query": q, "positive": pos, "negative": adversarial_negs[pos_id],
@@ -292,40 +277,38 @@ def main():
                         help="Модель для cross-domain semantic negatives")
     parser.add_argument("--strategy", choices=["all", "bm25", "crossdomain", "adversarial"],
                         default="all")
-    parser.add_argument("--adversarial_backend", choices=["openai", "ollama"], default="openai")
     parser.add_argument("--adversarial_llm", default="gpt-4o-mini")
     parser.add_argument("--adversarial_ratio", type=float, default=0.3,
                         help="Доля чанков для adversarial генерации")
+    parser.add_argument("--adversarial_concurrency", type=int, default=10,
+                        help="Число параллельных запросов к API для adversarial")
     parser.add_argument("--device", default=None,
                         help="Устройство для эмбеддингов: cuda/mps/cpu (по умолчанию — автовыбор)")
     parser.add_argument("--balance", action="store_true", default=True,
                         help="Балансировка по подобластям")
     args = parser.parse_args()
 
-    # Загрузка данных
     queries = [json.loads(l) for l in args.queries.open(encoding="utf-8")]
     all_chunks = [json.loads(l) for l in args.chunks.open(encoding="utf-8")]
     print(f"Запросов: {len(queries)}, чанков в корпусе: {len(all_chunks)}")
 
-    # Стратегия 1: BM25
     bm25_negs = [None] * len(queries)
     if args.strategy in ("all", "bm25"):
         bm25_negs = build_bm25_negatives(queries, all_chunks)
 
-    # Стратегия 2: Cross-domain semantic
     crossdomain_negs = [None] * len(queries)
     if args.strategy in ("all", "crossdomain"):
         crossdomain_negs = build_crossdomain_negatives(queries, all_chunks, args.model, device=args.device)
 
-    # Стратегия 3: Adversarial
     adversarial_negs = {}
     if args.strategy in ("all", "adversarial"):
-        adversarial_negs = build_adversarial_negatives(
-            all_chunks, args.adversarial_backend,
-            args.adversarial_llm, args.adversarial_ratio
-        )
+        adversarial_negs = asyncio.run(build_adversarial_negatives(
+            all_chunks,
+            model=args.adversarial_llm,
+            sample_ratio=args.adversarial_ratio,
+            concurrency=args.adversarial_concurrency,
+        ))
 
-    # Сборка триплетов
     triplets = build_triplets(queries, bm25_negs, crossdomain_negs, adversarial_negs)
     print(f"\nТриплетов до балансировки: {len(triplets)}")
 
@@ -333,7 +316,6 @@ def main():
         triplets = balance_by_subdomain(triplets)
         print(f"Триплетов после балансировки: {len(triplets)}")
 
-    # Статистика
     neg_types = defaultdict(int)
     for t in triplets:
         neg_types[t["neg_type"]] += 1
@@ -341,7 +323,6 @@ def main():
     for k, v in sorted(neg_types.items()):
         print(f"  {k:20s} {v:5d}")
 
-    # Сохранение
     with args.output.open("w", encoding="utf-8") as f:
         for t in triplets:
             f.write(json.dumps(t, ensure_ascii=False) + "\n")

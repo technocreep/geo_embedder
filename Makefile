@@ -49,16 +49,17 @@ run-pipeline:
 	docker compose exec pipeline python scripts/02_generate_queries.py \
 		--chunks /data/processed/chunks.jsonl \
 		--output /data/processed/queries.jsonl \
-		--backend openai \
 		--model gpt-4o-mini \
-		--queries_per_chunk 3
+		--queries_per_chunk 3 \
+		--concurrency 10
 
 	@echo "==> Шаг 3: Hard negative mining..."
 	docker compose exec pipeline python scripts/03_mine_hard_negatives.py \
 		--queries /data/processed/queries.jsonl \
 		--chunks /data/processed/chunks.jsonl \
 		--output /data/processed/training_triplets.jsonl \
-		--strategy all
+		--strategy all \
+		--adversarial_concurrency 10
 
 	@echo "==> Шаг 4: Обучение..."
 	docker compose exec pipeline python training/04_train_embedder.py \
