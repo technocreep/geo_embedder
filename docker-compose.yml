@@ -39,6 +39,8 @@ services:
       - ./output:/output                 # результаты экспериментов
       - ./scripts:/app/scripts           # код (монтируем для hot-reload при разработке)
       - ./training:/app/training
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # хост доступен как host.docker.internal
     working_dir: /app
     command: tail -f /dev/null
     shm_size: "16gb"                     # нужен для DataLoader с num_workers>0
