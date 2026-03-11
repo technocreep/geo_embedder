@@ -364,7 +364,10 @@ def train(args):
 
         # ── Логируем артефакт модели ──
         if mlflow_enabled and args.output_dir.exists():
-            mlflow.log_artifacts(str(args.output_dir), artifact_path="model")
+            try:
+                mlflow.log_artifacts(str(args.output_dir), artifact_path="model")
+            except Exception as e:
+                logger.warning(f"[MLflow] log_artifacts пропущен: {e}")
 
 
 def main():
