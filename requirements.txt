@@ -29,3 +29,4 @@ mlflow>=2.13.0
 # ─── LLM API (для генерации запросов и adversarial негативов) ─────────────────
 openai>=1.30.0            # опционально, если используется OpenAI backend
 python-dotenv>=1.0.0      # загрузка .env
+socksio>=1.0.0            # SOCKS5 прокси для httpx (внутри openai SDK)

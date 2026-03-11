@@ -82,7 +82,8 @@ RUN pip install --no-cache-dir --upgrade pip \
         "mlflow>=2.13.0" \
         "python-dotenv>=1.0.0" \
         # ── LLM API ─────────────────────────────────
-        openai>=1.30.0
+        openai>=1.30.0 \
+        "socksio>=1.0.0"
 
 # ── Копируем код проекта ──────────────────────────────────────────────────────
 COPY --chown=geouser:geouser . $APP_DIR/

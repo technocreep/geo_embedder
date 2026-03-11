@@ -182,11 +182,15 @@ def build_adversarial_negatives(
     for chunk in tqdm(sample, desc="Adversarial negatives"):
         try:
             if backend == "openai":
+                import httpx
                 from openai import OpenAI
+                proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+                http_client = httpx.Client(proxy=proxy) if proxy else None
                 client = OpenAI(
                     api_key=os.environ["OPENAI_API_KEY"],
                     base_url=os.environ.get("OPENAI_API_BASE", None),
-                    )
+                    http_client=http_client,
+                )
                 resp = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user",
