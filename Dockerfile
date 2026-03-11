@@ -78,6 +78,9 @@ RUN pip install --no-cache-dir --upgrade pip \
         fastapi>=0.111.0 \
         "uvicorn[standard]>=0.29.0" \
         pydantic>=2.6.0 \
+        # ── MLflow + env ─────────────────────────────
+        "mlflow>=2.13.0" \
+        "python-dotenv>=1.0.0" \
         # ── LLM API ─────────────────────────────────
         openai>=1.30.0
 

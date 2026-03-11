@@ -8,7 +8,7 @@ rank-bm25>=0.2.2          # BM25 hard negatives
 tqdm>=4.66.0              # прогресс-бары
 
 # ─── Обучение ─────────────────────────────────────────────────────────────────
-torch>=2.1.0
+torch>=2.4.0
 sentence-transformers>=2.7.0
 transformers>=4.40.0
 datasets>=2.18.0
