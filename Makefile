@@ -9,6 +9,11 @@
 build:
 	docker compose build
 
+hard-restart:
+	docker compose down
+	docker compose build --no-cache
+	docker compose up -d pipeline
+
 # ── Поднять все сервисы (pipeline + serve) ────────────────────────────────────
 up:
 	docker compose up -d pipeline serve
