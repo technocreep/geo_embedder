@@ -60,7 +60,7 @@ run-pipeline:
 	docker compose exec pipeline python scripts/02_generate_queries.py \
 		--chunks /data/processed/all_chunks.jsonl \
 		--output /data/processed/all_queries.jsonl \
-		--model gpt-4o-mini \
+		--model inception/mercury-2 \
 		--queries_per_chunk 3 \
 		--concurrency 10
 
