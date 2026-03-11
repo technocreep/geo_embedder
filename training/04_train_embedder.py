@@ -355,7 +355,12 @@ def train(args):
             result = evaluator(model)
             logger.info(f"Dev результаты: {result}")
             if mlflow_enabled and isinstance(result, dict):
-                mlflow.log_metrics(result)
+                safe_metrics = {
+                    k.replace("@", "_at_"): float(v)
+                    for k, v in result.items()
+                    if isinstance(v, (int, float))
+                }
+                mlflow.log_metrics(safe_metrics)
 
         # ── Логируем артефакт модели ──
         if mlflow_enabled and args.output_dir.exists():
