@@ -7,13 +7,13 @@
 #   - Python-зависимости пайплайна
 #   - non-root пользователь для безопасности
 # ─────────────────────────────────────────────────────────────────────────────
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
 
 # ── Метаданные ────────────────────────────────────────────────────────────────
 LABEL maintainer="geo-embedder"
 LABEL description="Fine-tuning & serving BAAI/bge-m3 for geology domain"
 LABEL cuda="12.1"
-LABEL pytorch="2.1.0"
+LABEL pytorch="2.4.1"
 
 # ── Системные переменные ──────────────────────────────────────────────────────
 ENV DEBIAN_FRONTEND=noninteractive
