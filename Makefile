@@ -91,8 +91,8 @@ run-pipeline:
 	docker compose exec pipeline python scripts/05_evaluate.py \
 		--test /data/processed/test_queries.jsonl \
 		--chunks /data/processed/test_chunks.jsonl \
-		--models "BAAI/bge-m3" "/models/finetuned-bge-m3-geo" \
-		--labels "Baseline" "Fine-tuned" \
+		--models "/models/finetuned-bge-m3-geo" "BAAI/bge-m3" "google/embeddinggemma-300m" "yasserrmd/geo-gemma-300m-emb" "ai-forever/sbert_large_nlu_ru" "intfloat/multilingual-e5-large"\
+		--labels "Fine-tuned" "Baseline" "google-gemma" "geo-gemma" "sberai-model" "infloat-e5-large"\
 		--output /output/eval_results.json
 
 	@echo "✓ Пайплайн завершён. Результаты: /output/eval_results.json"
