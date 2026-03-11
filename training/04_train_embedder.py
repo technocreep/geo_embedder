@@ -87,6 +87,30 @@ def load_pairs(path: Path) -> list[InputExample]:
     return examples
 
 
+def make_dev_from_triplets(triplets_path: Path, dev_path: Path, dev_ratio: float = 0.1) -> Path:
+    """
+    Создаёт dev_pairs.jsonl из случайного сплита training_triplets.jsonl.
+    Возвращает путь к созданному файлу.
+    """
+    all_lines = triplets_path.read_text(encoding="utf-8").splitlines()
+    random.shuffle(all_lines)
+    n_dev = max(50, int(len(all_lines) * dev_ratio))
+    dev_lines = all_lines[:n_dev]
+
+    with dev_path.open("w", encoding="utf-8") as f:
+        for line in dev_lines:
+            t = json.loads(line)
+            cid = f"chunk_{hash(t['positive']) & 0xFFFFFFFF}"
+            f.write(json.dumps({
+                "query": t["query"],
+                "positive_chunk_id": cid,
+                "positive_text": t["positive"],
+            }, ensure_ascii=False) + "\n")
+
+    logger.info(f"[dev split] Создан из {len(all_lines)} триплетов → {n_dev} dev-пар: {dev_path}")
+    return dev_path
+
+
 def load_dev_pairs(path: Path) -> tuple[list[str], list[str], list[float]]:
     """
     Загружает dev-сет для InformationRetrievalEvaluator.
@@ -233,8 +257,12 @@ def train(args):
 
         # Dev evaluator
         evaluator = None
-        if args.dev and Path(args.dev).exists():
-            queries, corpus, relevant = load_dev_pairs(Path(args.dev))
+        dev_path = Path(args.dev) if args.dev else None
+        if dev_path and not dev_path.exists():
+            # Автоматически создаём dev-сплит из триплетов
+            dev_path = make_dev_from_triplets(args.triplets, dev_path, dev_ratio=0.1)
+        if dev_path and dev_path.exists():
+            queries, corpus, relevant = load_dev_pairs(dev_path)
             evaluator = evaluation.InformationRetrievalEvaluator(
                 queries=queries,
                 corpus=corpus,
@@ -284,8 +312,8 @@ def train(args):
             warmup_steps=warmup_steps,
             optimizer_params={"lr": args.lr},
             output_path=str(args.output_dir),
-            save_best_model=True,
-            evaluation_steps=max(len(train_dataloader_mnrl) // 4, 100),
+            save_best_model=evaluator is not None,
+            evaluation_steps=max(len(train_dataloader_mnrl) // 4, 100) if evaluator else 0,
             show_progress_bar=True,
             use_amp=use_amp,   # fp16/bf16 mixed precision (только CUDA)
         )
