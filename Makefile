@@ -60,7 +60,7 @@ run-pipeline:
 	docker compose exec pipeline python scripts/02_generate_queries.py \
 		--chunks /data/processed/all_chunks.jsonl \
 		--output /data/processed/all_queries.jsonl \
-		--model inception/mercury-2 \
+		--model anthropic/claude-haiku-4.5 \
 		--queries_per_chunk 3 \
 		--concurrency 10
 
