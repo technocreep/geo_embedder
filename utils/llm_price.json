@@ -1,0 +1,39 @@
+
+{
+  "openai/gpt-4o-mini": {
+    "input": 0.15,
+    "output": 0.6
+  },
+  "openai/gpt-5-mini": {
+    "input": 0.25,
+    "output": 2.0
+  },
+  "google/gemini-2.5-flash": {
+    "input": 0.3,
+    "output": 2.5
+  },
+  "mistralai/mistral-medium-3": {
+    "input": 0.4,
+    "output": 2.0
+  },
+  "openai/gpt-oss-120b": {
+    "input": 0.04,
+    "output": 0.4
+  },
+  "anthropic/claude-sonnet-4.5": {
+    "input": 3.0,
+    "output": 15.0
+  },
+  "anthropic/claude-haiku-4.5": {
+    "input": 1.0,
+    "output": 5.0
+  },
+  "anthropic/claude-opus-4.5": {
+    "input": 5.0,
+    "output": 25.0
+  },
+  "nvidia/nemotron-3-nano-30b-a3b": {
+    "input": 0.05,
+    "output": 0.2
+  }
+}
