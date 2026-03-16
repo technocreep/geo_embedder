@@ -41,6 +41,7 @@ from sentence_transformers import (
 )
 from sentence_transformers.training_args import SentenceTransformerTrainingArguments
 from sentence_transformers.trainer import SentenceTransformerTrainer
+from datasets import Dataset, DatasetDict
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -278,46 +279,64 @@ def train(args):
         triplet_loss = losses.TripletLoss(model=model)
 
         # ── Loss 2: MultipleNegativesRankingLoss (in-batch negatives) ──
-        # Для MNRL нужны только пары (query, positive)
-        pairs = [InputExample(texts=[t.texts[0], t.texts[1]]) for t in triplets]
-        train_dataloader_mnrl = DataLoader(pairs, shuffle=True, batch_size=args.batch_size)
         mnrl_loss = losses.MultipleNegativesRankingLoss(model=model)
+        mnrl_dataset = Dataset.from_dict({
+            "anchor":   [t.texts[0] for t in triplets],
+            "positive": [t.texts[1] for t in triplets],
+        })
 
         # ── Loss 3: CoSENTLoss — добавляем scored pairs ──
         # Positive пары получают score=1, negative pairs score=0
-        cosent_examples = []
-        for t in triplets:
-            cosent_examples.append(InputExample(texts=[t.texts[0], t.texts[1]], label=1.0))
-            cosent_examples.append(InputExample(texts=[t.texts[0], t.texts[2]], label=0.0))
-        train_dataloader_cosent = DataLoader(cosent_examples, shuffle=True, batch_size=args.batch_size)
         cosent_loss = losses.CoSENTLoss(model=model)
+        cosent_dataset = Dataset.from_list(
+            [{"sentence_0": t.texts[0], "sentence_1": t.texts[1], "label": 1.0} for t in triplets]
+            + [{"sentence_0": t.texts[0], "sentence_1": t.texts[2], "label": 0.0} for t in triplets]
+        )
+        train_dataset = DatasetDict({"mnrl": mnrl_dataset, "cosent": cosent_dataset})
 
-        # Warmup steps
-        total_steps = (len(train_dataloader_mnrl) * args.epochs)
+        # Warmup steps — корректный подсчёт по обоим датасетам
+        steps_per_epoch = (
+            math.ceil(len(mnrl_dataset) / args.batch_size)
+            + math.ceil(len(cosent_dataset) / args.batch_size)
+        )
+        total_steps = steps_per_epoch * args.epochs
         warmup_steps = math.ceil(total_steps * 0.1)
+        eval_steps = max(steps_per_epoch // 4, 100)
 
-        logger.info(f"Всего шагов: {total_steps}, warmup: {warmup_steps}")
+        logger.info(f"Шагов на эпоху: {steps_per_epoch}, всего: {total_steps}, warmup: {warmup_steps}")
         logger.info(f"Выходная директория: {args.output_dir}")
         if mlflow_enabled:
-            mlflow.log_params({"total_steps": total_steps, "warmup_steps": warmup_steps})
+            mlflow.log_params({
+                "total_steps": total_steps,
+                "warmup_steps": warmup_steps,
+                "steps_per_epoch": steps_per_epoch,
+            })
 
-        # ── Обучение ──
-        # Используем fit() с несколькими лоссами (weighted)
-        model.fit(
-            train_objectives=[
-                (train_dataloader_mnrl, mnrl_loss),      # основной loss
-                (train_dataloader_cosent, cosent_loss),  # дополнительный
-            ],
-            evaluator=evaluator,
-            epochs=args.epochs,
+        # ── Обучение через SentenceTransformerTrainer (per-step MLflow logging) ──
+        training_args = SentenceTransformerTrainingArguments(
+            output_dir=str(args.output_dir),
+            num_train_epochs=args.epochs,
+            per_device_train_batch_size=args.batch_size,
+            learning_rate=args.lr,
             warmup_steps=warmup_steps,
-            optimizer_params={"lr": args.lr},
-            output_path=str(args.output_dir),
-            save_best_model=evaluator is not None,
-            evaluation_steps=max(len(train_dataloader_mnrl) // 4, 100) if evaluator else 0,
-            show_progress_bar=True,
-            use_amp=use_amp,   # fp16/bf16 mixed precision (только CUDA)
+            fp16=use_amp,
+            logging_steps=50,
+            eval_strategy="steps" if evaluator else "no",
+            eval_steps=eval_steps if evaluator else 0,
+            save_strategy="steps" if evaluator else "no",
+            save_steps=eval_steps if evaluator else 0,
+            load_best_model_at_end=evaluator is not None,
+            metric_for_best_model="eval_geo-dev_cos_sim_ndcg@10",
+            report_to=["mlflow"] if mlflow_enabled else [],
         )
+        trainer = SentenceTransformerTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            loss={"mnrl": mnrl_loss, "cosent": cosent_loss},
+            evaluator=evaluator,
+        )
+        trainer.train()
 
         logger.info(f"✓ Модель сохранена: {args.output_dir}")
 

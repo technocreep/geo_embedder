@@ -11,56 +11,92 @@
 """
 
 import argparse
+import asyncio
 import json
-import re
 import hashlib
+import os
 from pathlib import Path
 from typing import Optional
 
-# pip install pypdf python-docx langchain-text-splitters tqdm
+# pip install pypdf python-docx langchain-text-splitters tqdm openai
 from pypdf import PdfReader
 import docx
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tqdm import tqdm
+from openai import AsyncOpenAI
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
-# ─── Геологические подобласти (для subdomain labeling) ───────────────────────
-GEO_SUBDOMAINS = {
-    "стратиграфия": ["стратиграф", "горизонт", "свита", "ярус", "эпоха", "период",
-                     "кайнозой", "мезозой", "палеозой", "протерозой"],
-    "петрография": ["порода", "магматич", "осадоч", "метаморф", "минерал", "кристалл",
-                    "гранит", "известняк", "сланец", "песчаник"],
-    "тектоника": ["разлом", "сброс", "надвиг", "складч", "деформац", "тектоник",
-                  "плита", "блок", "грабен", "горст"],
-    "геохимия": ["геохими", "элемент", "изотоп", "концентрац", "аномали",
-                 "халькофил", "литофил", "сидерофил"],
-    "гидрогеология": ["водонос", "подземн вод", "фильтрац", "водопроницаем",
-                      "дебит", "пьезометр", "водоупор"],
-    "нефтегазовая": ["нефт", "газ", "углеводород", "коллектор", "пластов",
-                     "керн", "скважин", "пористост", "проницаем"],
-    "рудная_геология": ["руда", "рудн", "место-рожден", "месторожден",
-                        "золото", "медь", "полиметалл", "прогнозн"],
-    "сейсмика": ["сейсм", "отражени", "преломлени", "волна", "горизонт сейсм",
-                 "инверси", "атрибут"],
-    "гис_картография": ["ГИС", "картографи", "геодез", "координат", "проекц",
-                        "топограф", "дистанционн"],
-    "геофизика": ["геофизик", "гравиметр", "магнитометр", "электроразведк",
-                  "каротаж", "ВЭЗ", "МТЗ"],
-}
+# ─── Геологические подобласти ────────────────────────────────────────────────
+GEO_SUBDOMAINS = [
+    "стратиграфия",
+    "петрография",
+    "тектоника",
+    "геохимия",
+    "гидрогеология",
+    "рудная_геология",
+    "сейсмика",
+    "гис_картография",
+    "геофизика",
+    "общая_геология",
+]
+
+_SUBDOMAIN_SET = set(GEO_SUBDOMAINS)
+_DOMAINS_LIST = ", ".join(GEO_SUBDOMAINS)
+
+_SYSTEM_PROMPT = (
+    f"Ты классификатор геологических текстов. "
+    f"Выбери одну подобласть из списка: {_DOMAINS_LIST}. "
+    f"Отвечай строго одним словом — только названием подобласти, без пояснений."
+)
 
 
-def detect_subdomain(text: str) -> str:
-    """Определяет подобласть геологии по ключевым словам."""
-    text_lower = text.lower()
-    scores = {}
-    for domain, keywords in GEO_SUBDOMAINS.items():
-        score = sum(1 for kw in keywords if kw.lower() in text_lower)
-        if score > 0:
-            scores[domain] = score
-    if not scores:
-        return "общая_геология"
-    return max(scores, key=scores.get)
+# ─── Асинхронный LLM-клиент ──────────────────────────────────────────────────
 
+def _make_client() -> AsyncOpenAI:
+    return AsyncOpenAI(
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        base_url=os.environ.get("OPENAI_API_BASE", "https://openrouter.ai/api/v1"),
+    )
+
+
+async def detect_subdomain_async(
+    text: str,
+    client: AsyncOpenAI,
+    sem: asyncio.Semaphore,
+    model: str,
+    pbar: tqdm,
+) -> str:
+    """Определяет подобласть геологии с помощью LLM (асинхронно)."""
+    async with sem:
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": text[:500]},
+                ],
+                max_tokens=12,
+                temperature=0,
+            )
+            result = response.choices[0].message.content.strip().lower().replace(" ", "_")
+            if result in _SUBDOMAIN_SET:
+                return result
+            for domain in GEO_SUBDOMAINS:
+                if domain in result:
+                    return domain
+            return "общая_геология"
+        except Exception as e:
+            tqdm.write(f"  [llm error] detect_subdomain: {e}")
+            return "общая_геология"
+        finally:
+            pbar.update(1)
+
+
+# ─── Извлечение текста ────────────────────────────────────────────────────────
 
 def extract_text_pdf(path: Path) -> str:
     reader = PdfReader(str(path))
@@ -87,10 +123,10 @@ def extract_text(path: Path) -> Optional[str]:
         elif suffix in (".txt", ".md"):
             return path.read_text(encoding="utf-8", errors="ignore")
         else:
-            print(f"  [skip] Unsupported format: {path}")
+            tqdm.write(f"  [skip] Unsupported format: {path}")
             return None
     except Exception as e:
-        print(f"  [error] {path.name}: {e}")
+        tqdm.write(f"  [error] {path.name}: {e}")
         return None
 
 
@@ -121,50 +157,76 @@ def make_chunk_id(source: str, chunk_index: int, text: str) -> str:
     return f"{Path(source).stem}_{chunk_index:04d}_{h}"
 
 
-def process_directory(
+# ─── Основной пайплайн ────────────────────────────────────────────────────────
+
+async def process_directory(
     input_dir: Path,
     output_path: Path,
     chunk_size: int = 512,
     overlap: int = 64,
+    concurrency: int = 10,
 ):
     files = list(input_dir.rglob("*"))
     files = [f for f in files if f.suffix.lower() in (".pdf", ".docx", ".txt", ".md")]
     print(f"Найдено файлов: {len(files)}")
 
-    total_chunks = 0
-    subdomain_counts: dict[str, int] = {}
+    # ── Фаза 1: извлечение текста и чанкование (CPU, без LLM) ────────────────
+    print("\nФаза 1/2 — извлечение и чанкование документов")
+    raw_chunks: list[dict] = []  # {id, text, metadata} без subdomain
+    skipped_files = 0
 
-    with output_path.open("w", encoding="utf-8") as fout:
-        for fpath in tqdm(files, desc="Обработка документов"):
-            text = extract_text(fpath)
-            if not text or len(text.strip()) < 100:
+    for fpath in tqdm(files, desc="  Документы", unit="файл"):
+        text = extract_text(fpath)
+        if not text or len(text.strip()) < 100:
+            skipped_files += 1
+            continue
+
+        chunks = chunk_text(text, chunk_size, overlap)
+        total_in_doc = len(chunks)
+
+        for i, chunk in enumerate(chunks):
+            if len(chunk.strip()) < 50:
                 continue
+            raw_chunks.append({
+                "id": make_chunk_id(str(fpath), i, chunk),
+                "text": chunk.strip(),
+                "metadata": {
+                    "source": fpath.name,
+                    "source_path": str(fpath.relative_to(input_dir)),
+                    "chunk_index": i,
+                    "total_chunks": total_in_doc,
+                    "char_length": len(chunk),
+                },
+            })
 
-            chunks = chunk_text(text, chunk_size, overlap)
+    print(f"  Извлечено чанков: {len(raw_chunks):,}  |  пропущено файлов: {skipped_files}")
 
-            for i, chunk in enumerate(chunks):
-                if len(chunk.strip()) < 50:   # Пропускаем слишком короткие
-                    continue
+    # ── Фаза 2: асинхронное определение подобластей (LLM) ────────────────────
+    model = os.environ["DOMAIN_DETECTION_MODEL"]
+    print(f"\nФаза 2/2 — определение подобластей  [{model}, параллелизм={concurrency}]")
 
-                subdomain = detect_subdomain(chunk)
-                subdomain_counts[subdomain] = subdomain_counts.get(subdomain, 0) + 1
+    client = _make_client()
+    sem = asyncio.Semaphore(concurrency)
 
-                record = {
-                    "id": make_chunk_id(str(fpath), i, chunk),
-                    "text": chunk.strip(),
-                    "metadata": {
-                        "source": fpath.name,
-                        "source_path": str(fpath.relative_to(input_dir)),
-                        "chunk_index": i,
-                        "total_chunks": len(chunks),
-                        "subdomain": subdomain,
-                        "char_length": len(chunk),
-                    }
-                }
-                fout.write(json.dumps(record, ensure_ascii=False) + "\n")
-                total_chunks += 1
+    with tqdm(total=len(raw_chunks), desc="  Чанки", unit="чанк") as pbar:
+        tasks = [
+            detect_subdomain_async(c["text"], client, sem, model, pbar)
+            for c in raw_chunks
+        ]
+        subdomains = await asyncio.gather(*tasks)
 
-    print(f"\n✓ Всего чанков: {total_chunks}")
+    await client.close()
+
+    # ── Запись результатов ────────────────────────────────────────────────────
+    subdomain_counts: dict[str, int] = {}
+    with output_path.open("w", encoding="utf-8") as fout:
+        for chunk, subdomain in zip(raw_chunks, subdomains):
+            chunk["metadata"]["subdomain"] = subdomain
+            subdomain_counts[subdomain] = subdomain_counts.get(subdomain, 0) + 1
+            fout.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+
+    total_chunks = len(raw_chunks)
+    print(f"\n✓ Сохранено чанков: {total_chunks:,}  →  {output_path}")
     print(f"\nРаспределение по подобластям:")
     for domain, cnt in sorted(subdomain_counts.items(), key=lambda x: -x[1]):
         pct = cnt / total_chunks * 100
@@ -178,9 +240,13 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("chunks.jsonl"))
     parser.add_argument("--chunk_size", type=int, default=512)
     parser.add_argument("--overlap", type=int, default=64)
+    parser.add_argument("--concurrency", type=int, default=10,
+                        help="Число параллельных LLM-запросов (по умолчанию 10)")
     args = parser.parse_args()
 
-    process_directory(args.input_dir, args.output, args.chunk_size, args.overlap)
+    asyncio.run(process_directory(
+        args.input_dir, args.output, args.chunk_size, args.overlap, args.concurrency,
+    ))
 
 
 if __name__ == "__main__":

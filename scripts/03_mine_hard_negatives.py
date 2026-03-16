@@ -161,7 +161,7 @@ ADVERSARIAL_PROMPT = """Ты эксперт-геолог. Перефразиру
 
 async def build_adversarial_negatives(
     chunks: list[dict],
-    model: str = "gpt-4o-mini",
+    model: str,
     sample_ratio: float = 0.3,
     concurrency: int = 10,
 ) -> dict[str, str]:
@@ -277,7 +277,7 @@ def main():
                         help="Модель для cross-domain semantic negatives")
     parser.add_argument("--strategy", choices=["all", "bm25", "crossdomain", "adversarial"],
                         default="all")
-    parser.add_argument("--adversarial_llm", default="gpt-4o-mini")
+
     parser.add_argument("--adversarial_ratio", type=float, default=0.3,
                         help="Доля чанков для adversarial генерации")
     parser.add_argument("--adversarial_concurrency", type=int, default=10,
@@ -300,11 +300,12 @@ def main():
     if args.strategy in ("all", "crossdomain"):
         crossdomain_negs = build_crossdomain_negatives(queries, all_chunks, args.model, device=args.device)
 
+    model = os.environ["ADVERSARIAL_MODEL"]
     adversarial_negs = {}
     if args.strategy in ("all", "adversarial"):
         adversarial_negs = asyncio.run(build_adversarial_negatives(
             all_chunks,
-            model=args.adversarial_llm,
+            model=model,
             sample_ratio=args.adversarial_ratio,
             concurrency=args.adversarial_concurrency,
         ))

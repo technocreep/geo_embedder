@@ -8,7 +8,6 @@
     python 02_generate_queries.py \
         --chunks chunks.jsonl \
         --output queries.jsonl \
-        --model gpt-4o-mini \
         --queries_per_chunk 3 \
         --concurrency 10
 """
@@ -129,9 +128,10 @@ async def _run(args):
 
     if args.max_chunks:
         chunks = chunks[:args.max_chunks]
-
+    
+    model = os.environ["QUERY_MODEL"]
     print(f"Чанков для обработки: {len(chunks)}")
-    print(f"Модель: {args.model}, параллелизм: {args.concurrency}")
+    print(f"Модель: {model}, параллелизм: {args.concurrency}")
 
     client, http_client = _make_async_client()
     sem = asyncio.Semaphore(args.concurrency)
@@ -148,7 +148,7 @@ async def _run(args):
                     text=chunk["text"],
                     subdomain=chunk["metadata"].get("subdomain", "общая_геология"),
                     n=args.queries_per_chunk,
-                    model=args.model,
+                    model=model,
                 )
                 queries = [q for q in queries if filter_query(q)]
             except Exception as e:
@@ -192,7 +192,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--chunks", type=Path, default=Path("chunks.jsonl"))
     parser.add_argument("--output", type=Path, default=Path("queries.jsonl"))
-    parser.add_argument("--model", default="gpt-4o-mini")
     parser.add_argument("--queries_per_chunk", type=int, default=3)
     parser.add_argument("--max_chunks", type=int, default=None,
                         help="Ограничить кол-во чанков (для тестирования)")
