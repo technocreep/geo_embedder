@@ -1,5 +1,7 @@
 # Geo Embedder — BAAI/bge-m3 для геологии
 
+[🇬🇧 English version](README_eng.md)
+
 Пайплайн дообучения мультиязычной модели эмбеддингов [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3) на геологических документах. Цель — получить доменно-специфическую модель с точным retrieval для RAG-систем (Open WebUI + ChromaDB).
 
 Методология основана на **X-Intelligence 3.0** (TCL Research, 2025).
